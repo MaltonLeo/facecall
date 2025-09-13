@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>FaceCall — WebRTC + Face Detection</title>
+  <link rel="stylesheet" href="/style.css" />
+  <!-- Socket.IO -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <!-- TensorFlow.js & BlazeFace -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>FaceCall</h1>
+    <div class="room-controls">
+      <input id="room-input" placeholder="room id (e.g., demo)"/>
+      <button id="join-btn">Create/Join Room</button>
+      <span id="share-link"></span>
+    </div>
+  </header>
+  <main>
+    <section class="videos" id="videos"></section>
+  </main>
+  <footer>
+    <p>WebRTC mesh (≤4 users recommended). Face detection via BlazeFace (TF.js).</p>
+  </footer>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
