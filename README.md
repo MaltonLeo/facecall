@@ -57,22 +57,7 @@ Infrastructure
 AWS EC2 - Cloud hosting
 HTTPS/WSS - Secure connections required for WebRTC
 
- Architecture
-┌─────────────┐    ┌─────────────┐
-│   Client A  │◄──►│   Client B  │
-│             │    │             │
-│ ┌─────────┐ │    │ ┌─────────┐ │
-│ │WebRTC P2P│ │    │ │WebRTC P2P│ │
-│ │Connection│◄┼────┼►│Connection│ │
-│ └─────────┘ │    │ └─────────┘ │
-└──────┬──────┘    └──────┬──────┘
-       │ Signaling        │ Signaling
-       │ (Socket.IO)      │ (Socket.IO)
-       ▼                  ▼
-┌─────────────────────────────────┐
-│     Signaling Server            │
-│     (Node.js + Socket.IO)       │
-└─────────────────────────────────┘
+
 
 Prerequisites
 
@@ -90,16 +75,6 @@ cd facecall-webrtc
 Install dependencies
 
 bash npm install
-
-Project Structure
-facecall-webrtc/
-├── public/
-│   ├── app.js              # Main WebRTC client logic
-│   ├── style.css           # UI styling
-│   └── index.html          # HTML template
-├── server.js               # Express + Socket.IO server
-├── package.json            # Dependencies
-└── README.md              # This file
 
 WebRTC is chosen for peer-to-peer video/audio, low latency, and cross-browser support.
 
