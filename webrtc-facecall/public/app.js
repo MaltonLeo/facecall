@@ -1,6 +1,6 @@
 
-// app.js — FaceCall (mesh ≤4 users) - FIXED VERSION
-// Fixes: proper peer state management, face detection optimization, better video track handling
+// app.js — FaceCall (mesh ≤4 users) - IMPROVED VERSION
+// Fixes: proper peer state management, face detection optimization, better video track handling, iOS compatibility
 
 /* ====================== Socket.IO ====================== */
 const socket = io();
@@ -38,7 +38,11 @@ function log(...a){ console.log("[FaceCall]", ...a); }
 function warn(...a){ console.warn("[FaceCall]", ...a); }
 function err(...a){ console.error("[FaceCall]", ...a); }
 
-/* ====================== Video Card (FIXED) ====================== */
+// iOS/Safari detection
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+const isSafari = /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent);
+
+/* ====================== Video Card (IMPROVED) ====================== */
 function addVideoCard(id, stream, isLocal = false) {
   let card = document.querySelector(`.video-card[data-id="${id}"]`);
   if (card) card.remove();
@@ -90,19 +94,39 @@ function addVideoCard(id, stream, isLocal = false) {
   if (unmuteBtn) card.appendChild(unmuteBtn);
   $videos.appendChild(card);
 
-  // FIXED: Better video loading handling
+  // IMPROVED: Better video loading handling with iOS/Safari support
   video.addEventListener("loadedmetadata", async () => {
     log("Video metadata loaded for", id, "dimensions:", video.videoWidth, "x", video.videoHeight);
-    canvas.width = video.videoWidth || 320;
-    canvas.height = video.videoHeight || 240;
+    
+    // iPhone/Safari fallback dimensions with better detection
+    const width = video.videoWidth || 320;
+    const height = video.videoHeight || 240;
+    
+    canvas.width = width;
+    canvas.height = height;
     
     try { 
       await video.play(); 
       log("Video playing for", id);
-      // Start face detection after video is actually playing
-      if (!faceDetectors.has(id)) {
-        startFaceDetectorFor(id);
-      }
+      
+      // IMPROVED: Face detection with better timing and validation
+      setTimeout(() => {
+        const hasValidVideo = video.videoWidth > 0 && video.videoHeight > 0 && 
+                             video.readyState >= 2 && !video.paused;
+        
+        if (hasValidVideo && !faceDetectors.has(id)) {
+          startFaceDetectorFor(id);
+        } else if (!hasValidVideo) {
+          log("Delaying face detection for", id, "- video not ready");
+          // Retry face detection after more time for iOS devices
+          setTimeout(() => {
+            if (video.videoWidth > 0 && !faceDetectors.has(id)) {
+              startFaceDetectorFor(id);
+            }
+          }, isIOS ? 5000 : 3000);
+        }
+      }, isIOS ? 2000 : 1000); // Longer delay for iOS
+      
     } catch (e) {
       warn("Video play failed for", id, e);
     }
@@ -112,6 +136,12 @@ function addVideoCard(id, stream, isLocal = false) {
   video.addEventListener("canplay", () => log("Video can play:", id));
   video.addEventListener("playing", () => log("Video started playing:", id));
   video.addEventListener("error", (e) => err("Video error for", id, e));
+
+  // iOS-specific event listeners
+  if (isIOS) {
+    video.addEventListener("suspend", () => log("Video suspended:", id));
+    video.addEventListener("waiting", () => log("Video waiting:", id));
+  }
 
   return card;
 }
@@ -123,6 +153,7 @@ function removePeer(id) {
   if (faceDetectors.has(id)) {
     clearInterval(faceDetectors.get(id));
     faceDetectors.delete(id);
+    log("Stopped face detection for", id);
   }
   
   // Clean up peer connection
@@ -146,7 +177,7 @@ function removePeer(id) {
   }
 }
 
-/* ====================== Face Detection (OPTIMIZED) ====================== */
+/* ====================== Face Detection (ROBUST) ====================== */
 async function startFaceDetectorFor(id) {
   if (faceDetectors.has(id)) {
     return; // Already running
@@ -167,58 +198,120 @@ async function startFaceDetectorFor(id) {
     return;
   }
 
+  // Enhanced video content validation
+  const validateVideoContent = () => {
+    return video.readyState >= 2 && 
+           video.videoWidth > 0 && 
+           video.videoHeight > 0 && 
+           !video.paused &&
+           video.currentTime > 0;
+  };
+
+  // Wait for video to be truly ready
+  if (!validateVideoContent()) {
+    log("Video not ready for face detection:", id, {
+      readyState: video.readyState,
+      dimensions: `${video.videoWidth}x${video.videoHeight}`,
+      paused: video.paused,
+      currentTime: video.currentTime
+    });
+    
+    // Retry with exponential backoff
+    setTimeout(() => startFaceDetectorFor(id), 3000);
+    return;
+  }
+
   try {
     log("Loading BlazeFace model for", id);
     const model = await blazeface.load();
     let isDetecting = false;
+    let consecutiveErrors = 0;
+    let detectionCount = 0;
 
     const detectLoop = async () => {
       if (isDetecting) return; // Prevent overlapping detections
       
-      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-        isDetecting = true;
-        
-        try {
-          // Ensure canvas matches video dimensions
-          if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
+      // Re-validate video content on each loop
+      if (!validateVideoContent()) {
+        consecutiveErrors++;
+        if (consecutiveErrors > 10) {
+          log("Too many validation failures, stopping face detection for", id);
+          if (faceDetectors.has(id)) {
+            clearInterval(faceDetectors.get(id));
+            faceDetectors.delete(id);
           }
-          
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          
-          // Face detection with error handling
-          const predictions = await model.estimateFaces(video, false);
-          
-          // Draw bounding boxes
-          for (const prediction of predictions) {
-            const [x, y] = prediction.topLeft;
-            const [x2, y2] = prediction.bottomRight;
-            
-            ctx.lineWidth = 3;
-            ctx.strokeStyle = "#00FFAA";
-            ctx.strokeRect(x, y, x2 - x, y2 - y);
-            
-            // Optional: Add confidence score
-            if (prediction.probability) {
-              ctx.fillStyle = "#00FFAA";
-              ctx.font = "14px Arial";
-              ctx.fillText(`${Math.round(prediction.probability * 100)}%`, x, y - 5);
-            }
-          }
-        } catch (e) {
-          warn("Face detection error for", id, e);
-        } finally {
-          isDetecting = false;
         }
+        return;
+      }
+
+      consecutiveErrors = 0; // Reset error counter
+      isDetecting = true;
+      
+      try {
+        // Ensure canvas matches video dimensions
+        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          log("Updated canvas dimensions for", id, `${canvas.width}x${canvas.height}`);
+        }
+        
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Face detection with timeout protection
+        const detectionPromise = model.estimateFaces(video, false);
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Detection timeout')), 1000)
+        );
+        
+        const predictions = await Promise.race([detectionPromise, timeoutPromise]);
+        
+        // Draw bounding boxes
+        for (const prediction of predictions) {
+          const [x, y] = prediction.topLeft;
+          const [x2, y2] = prediction.bottomRight;
+          
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = "#00FFAA";
+          ctx.strokeRect(x, y, x2 - x, y2 - y);
+          
+          // Optional: Add confidence score
+          if (prediction.probability) {
+            ctx.fillStyle = "#00FFAA";
+            ctx.font = "14px Arial";
+            ctx.fillText(`${Math.round(prediction.probability * 100)}%`, x, y - 5);
+          }
+        }
+        
+        detectionCount++;
+        
+        // Log progress every 5 seconds
+        if (detectionCount % 25 === 0) {
+          log(`Face detection active for ${id} (${detectionCount} frames processed)`);
+        }
+        
+      } catch (e) {
+        consecutiveErrors++;
+        warn("Face detection error for", id, e.message);
+        
+        // Stop if too many consecutive errors
+        if (consecutiveErrors > 5) {
+          err("Too many face detection errors, stopping for", id);
+          if (faceDetectors.has(id)) {
+            clearInterval(faceDetectors.get(id));
+            faceDetectors.delete(id);
+          }
+        }
+      } finally {
+        isDetecting = false;
       }
     };
 
-    // Use interval instead of requestAnimationFrame to reduce CPU load
-    const intervalId = setInterval(detectLoop, 200); // 5 FPS for face detection
+    // Adjust detection frequency based on device capabilities
+    const detectionInterval = isIOS ? 300 : 200; // Slower on iOS to reduce CPU load
+    const intervalId = setInterval(detectLoop, detectionInterval);
     faceDetectors.set(id, intervalId);
     
-    log("Face detection started for", id);
+    log("Face detection started for", id, `at ${1000/detectionInterval}fps`);
   } catch (e) {
     err("Failed to start face detection for", id, e);
   }
@@ -245,7 +338,7 @@ function getOrCreatePeerState(peerId) {
   // Store immediately to prevent race conditions
   peers.set(peerId, state);
 
-  // --- Enhanced Diagnostics ---
+  // Enhanced Diagnostics
   pc.onicegatheringstatechange = () => log(peerId, "iceGatheringState:", pc.iceGatheringState);
   pc.oniceconnectionstatechange = () => {
     log(peerId, "iceConnectionState:", pc.iceConnectionState);
@@ -265,19 +358,22 @@ function getOrCreatePeerState(peerId) {
     }
   };
 
-  // --- Stable m-line order: audio then video transceivers ---
+  // Stable m-line order: audio then video transceivers
   const audioTr = pc.addTransceiver("audio", { direction: "sendrecv" });
   const videoTr = pc.addTransceiver("video", { direction: "sendrecv" });
   
-  // --- Codec preferences ---
+  // Enhanced codec preferences with Safari/iOS support
   try {
     const caps = RTCRtpReceiver.getCapabilities("video");
     if (videoTr.setCodecPreferences && caps?.codecs?.length) {
       const h264 = caps.codecs.filter(c => /video\/h264/i.test(c.mimeType));
       const vp8 = caps.codecs.filter(c => /video\/vp8/i.test(c.mimeType));
       const rest = caps.codecs.filter(c => !h264.includes(c) && !vp8.includes(c));
-      videoTr.setCodecPreferences([...h264, ...vp8, ...rest]);
-      log(peerId, "codec prefs set:", [...h264, ...vp8].map(c => c.mimeType));
+      
+      // Prioritize H.264 for Safari/iOS compatibility
+      const codecOrder = isSafari || isIOS ? [...h264, ...vp8, ...rest] : [...h264, ...vp8, ...rest];
+      videoTr.setCodecPreferences(codecOrder);
+      log(peerId, "codec prefs set:", codecOrder.slice(0, 3).map(c => c.mimeType));
     }
   } catch (e) {
     warn(peerId, "setCodecPreferences skipped:", e);
@@ -301,7 +397,7 @@ function getOrCreatePeerState(peerId) {
     }
   }
 
-  // --- FIXED: Remote track handling ---
+  // ENHANCED: Remote track handling with better iOS support
   pc.ontrack = async (e) => {
     log(peerId, "ontrack received:", e.track.kind, "id:", e.track.id);
 
@@ -334,7 +430,7 @@ function getOrCreatePeerState(peerId) {
     video.autoplay = true;
     video.playsInline = true;
 
-    // Handle track events
+    // Enhanced track event handling
     e.track.onended = () => {
       log("Track ended for", peerId, e.track.kind);
       stream.removeTrack(e.track);
@@ -343,14 +439,20 @@ function getOrCreatePeerState(peerId) {
     e.track.onmute = () => log("Track muted for", peerId, e.track.kind);
     e.track.onunmute = () => {
       log("Track unmuted for", peerId, e.track.kind);
-      // Try to play when track becomes active
-      video.play().catch(err => warn("Auto-play blocked:", err));
+      // Enhanced autoplay handling for iOS
+      if (isIOS) {
+        setTimeout(() => {
+          video.play().catch(err => warn("Auto-play blocked:", err));
+        }, 100);
+      } else {
+        video.play().catch(err => warn("Auto-play blocked:", err));
+      }
     };
   };
 
-  // --- FIXED: Negotiation handling ---
+  // FIXED: Negotiation handling
   pc.onnegotiationneeded = async () => {
-    // Check if peer state still exists (might have been removed)
+    // Check if peer state still exists
     if (!peers.has(peerId)) {
       log("Peer", peerId, "no longer exists, skipping negotiation");
       return;
@@ -369,7 +471,7 @@ function getOrCreatePeerState(peerId) {
     currentState.makingOffer = true;
     try {
       const offer = await pc.createOffer();
-      if (pc.signalingState === "stable") { // Double-check state hasn't changed
+      if (pc.signalingState === "stable") {
         await pc.setLocalDescription(offer);
         socket.emit("offer", { to: peerId, sdp: pc.localDescription });
         log("offer→", peerId);
@@ -386,27 +488,41 @@ function getOrCreatePeerState(peerId) {
   return state;
 }
 
-/* ====================== Local media & join ====================== */
+/* ====================== Local media & join (ENHANCED) ====================== */
 async function init(room) {
   roomId = room;
   
   try {
+    // iOS-optimized media constraints
+    const videoConstraints = isIOS ? {
+      facingMode: "user",
+      width: { ideal: 640, max: 1280 },
+      height: { ideal: 480, max: 720 },
+      frameRate: { ideal: 15, max: 30 }
+    } : {
+      facingMode: "user",
+      width: { ideal: 1280, max: 1920 },
+      height: { ideal: 720, max: 1080 },
+      frameRate: { ideal: 30, max: 60 }
+    };
+
+    const audioConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    };
+
+    // Don't include sampleRate for iOS compatibility
+    if (!isIOS) {
+      audioConstraints.sampleRate = 44100;
+    }
+
     localStream = await navigator.mediaDevices.getUserMedia({
-      video: { 
-        facingMode: "user",
-        width: { ideal: 1280, max: 1920 },
-        height: { ideal: 720, max: 1080 },
-        frameRate: { ideal: 30, max: 60 }
-      },
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        sampleRate: 44100
-      }
+      video: videoConstraints,
+      audio: audioConstraints
     });
     
-    log("Local media acquired successfully");
+    log("Local media acquired successfully", isIOS ? "(iOS optimized)" : "");
   } catch (e) {
     err("Camera/mic permission error:", e);
     alert("Camera/mic permission error: " + e.message);
@@ -632,11 +748,11 @@ async function switchCamera(deviceId) {
     err("Camera switch error:", e);
   }
 }
-// Add this diagnostic function to your app.js for troubleshooting
-// Call it from browser console: diagnoseConnections()
 
+/* ====================== Enhanced Diagnostic Functions ====================== */
 function diagnoseConnections() {
   console.log("=== FACECALL DIAGNOSTICS ===");
+  console.log("Device info:", { isIOS, isSafari });
   
   // Check local stream
   console.log("Local stream:", localStream);
@@ -645,7 +761,8 @@ function diagnoseConnections() {
       kind: t.kind,
       enabled: t.enabled,
       readyState: t.readyState,
-      muted: t.muted
+      muted: t.muted,
+      label: t.label
     })));
   }
   
@@ -708,13 +825,14 @@ function diagnoseConnections() {
     }
   });
   
+  // Check face detection
+  console.log("\n=== FACE DETECTION ===");
+  console.log("Active detectors:", Array.from(faceDetectors.keys()));
+  console.log("BlazeFace loaded:", typeof blazeface !== "undefined");
+  
   console.log("=== END DIAGNOSTICS ===");
 }
 
-// Auto-diagnose every 10 seconds (remove in production)
-// setInterval(diagnoseConnections, 10000);
-
-// Also add this function to force video play
 function forcePlayAllVideos() {
   const videos = document.querySelectorAll('.video-card video');
   videos.forEach(async (video, index) => {
@@ -726,6 +844,28 @@ function forcePlayAllVideos() {
       console.warn(`Video ${index} play failed:`, e);
     }
   });
+}
+
+// Enhanced face detection status checker
+function checkFaceDetectionStatus() {
+  console.log("=== FACE DETECTION STATUS ===");
+  
+  document.querySelectorAll('.video-card').forEach((card, i) => {
+    const video = card.querySelector('video');
+    const canvas = card.querySelector('canvas');
+    const peerId = card.dataset.id;
+    
+    console.log(`Video ${i} (${peerId}):`);
+    console.log("- Video dimensions:", video.videoWidth, "x", video.videoHeight);
+    console.log("- Canvas dimensions:", canvas.width, "x", canvas.height);
+    console.log("- Face detection active:", faceDetectors.has(peerId));
+    console.log("- Video ready:", video.readyState >= 2);
+    console.log("- Video playing:", !video.paused);
+    console.log("- Current time:", video.currentTime);
+  });
+  
+  console.log("Active detectors:", Array.from(faceDetectors.keys()));
+  console.log("BlazeFace available:", typeof blazeface !== "undefined");
 }
 
 // Quick fix function for black video
@@ -762,12 +902,17 @@ function fixBlackVideo(peerId) {
         console.warn(`Track ${track.kind} has ended!`);
       }
     });
+    
+    // Restart face detection if video becomes valid
+    setTimeout(() => {
+      if (video.videoWidth > 0 && !faceDetectors.has(peerId)) {
+        startFaceDetectorFor(peerId);
+      }
+    }, 2000);
   }
 }
-// ADD THIS CODE to the very end of your app.js file
-// This creates a simple "Fix Video" button you can click
 
-// Create a Fix Video button
+/* ====================== Enhanced Fix Video Button ====================== */
 function createFixButton() {
   // Remove existing button if it exists
   const existingBtn = document.getElementById('fix-video-btn');
@@ -791,13 +936,14 @@ function createFixButton() {
     font-weight: bold;
   `;
 
-  // Add click handler
+  // Enhanced click handler
   fixBtn.onclick = function() {
-    console.log('=== FIXING BLACK VIDEOS ===');
+    console.log('=== ENHANCED FIXING BLACK VIDEOS ===');
+    console.log('Device:', { isIOS, isSafari });
     
     // Show what we're doing
     fixBtn.textContent = '🔄 Fixing...';
-    fixBtn.style.background = '#orange';
+    fixBtn.style.background = 'orange';
     
     // Get all video cards
     const videoCards = document.querySelectorAll('.video-card');
@@ -805,6 +951,7 @@ function createFixButton() {
     
     videoCards.forEach((card, index) => {
       const video = card.querySelector('video');
+      const canvas = card.querySelector('canvas');
       const peerId = card.dataset.id;
       const isLocal = peerId === 'local';
       
@@ -813,7 +960,8 @@ function createFixButton() {
         readyState: video.readyState,
         paused: video.paused,
         muted: video.muted,
-        hasSource: !!video.srcObject
+        hasSource: !!video.srcObject,
+        currentTime: video.currentTime
       });
       
       // Try to fix the video
@@ -823,21 +971,37 @@ function createFixButton() {
           kind: t.kind,
           enabled: t.enabled,
           readyState: t.readyState,
-          muted: t.muted
+          muted: t.muted,
+          label: t.label
         })));
         
         // Force video properties
         video.autoplay = true;
         video.playsInline = true;
-        video.muted = isLocal; // Local muted, remote unmuted
+        video.muted = isLocal; // Local muted, remote unmuted initially
         
-        // Try to play
+        // Enhanced canvas setup
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        } else {
+          canvas.width = 320;
+          canvas.height = 240;
+        }
+        
+        // Try to play with enhanced error handling
         video.play().then(() => {
           console.log(`✅ Video ${index} (${peerId}) is now playing`);
+          
+          // Restart face detection if needed
+          if (video.videoWidth > 0 && !faceDetectors.has(peerId)) {
+            setTimeout(() => startFaceDetectorFor(peerId), 1000);
+          }
+          
         }).catch(error => {
           console.log(`❌ Video ${index} (${peerId}) play failed:`, error.message);
           
-          // Try with muted
+          // Try with muted for autoplay policy
           video.muted = true;
           return video.play();
         }).then(() => {
@@ -852,7 +1016,7 @@ function createFixButton() {
       }
     });
     
-    // Check peers
+    // Enhanced peer connection diagnostics
     console.log('\n=== PEER CONNECTIONS ===');
     console.log('Active peers:', peers.size);
     
@@ -860,7 +1024,8 @@ function createFixButton() {
       console.log(`Peer ${peerId}:`, {
         connectionState: state.pc.connectionState,
         iceConnectionState: state.pc.iceConnectionState,
-        signalingState: state.pc.signalingState
+        signalingState: state.pc.signalingState,
+        polite: state.polite
       });
       
       // Check transceivers
@@ -876,18 +1041,23 @@ function createFixButton() {
       });
     }
     
+    // Face detection status
+    setTimeout(() => {
+      checkFaceDetectionStatus();
+    }, 2000);
+    
     // Reset button
     setTimeout(() => {
       fixBtn.textContent = '🔧 Fix Black Videos';
       fixBtn.style.background = '#ff4444';
     }, 3000);
     
-    console.log('=== FIX COMPLETE - Check console above for details ===');
+    console.log('=== ENHANCED FIX COMPLETE - Check console above for details ===');
   };
 
   // Add to page
   document.body.appendChild(fixBtn);
-  console.log('Fix Video button added to page');
+  console.log('Enhanced Fix Video button added to page');
 }
 
 // Create the button when page loads
