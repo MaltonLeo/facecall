@@ -12,11 +12,11 @@ coturn server running on your EC2 (for NAT traversal)
 AWS EC2 instance (Ubuntu recommended)
 
 2. Setup
-# Clone repository
+Clone repository
 git clone <your-private-repo-url>
 cd facecall
 
-# Install dependencies
+Install dependencies
 npm install
 
 3. Environment
@@ -36,20 +36,45 @@ Open http://localhost:3000
  in your browser.
 
 5. Deploy on EC2
-# Build frontend
-npm run build
-
-# Start with pm2
-pm2 start server.js --name facecall
-pm2 save
 
 
-Make sure TCP/UDP 3478 and UDP relay ports (e.g., 49160–49200) are open in AWS security group.
+Frontend
 
-Access app at:https://call.malton.uz/?room=demo
+WebRTC - Peer-to-peer real-time communication
+Socket.IO - Signaling server for connection establishment
+TensorFlow.js BlazeFace - Real-time face detection
+Vanilla JavaScript - No framework dependencies
 
-Design Decisions
-WebRTC + Socket.io
+Backend
+
+Node.js - Server runtime
+Express.js - Web framework
+Socket.IO - WebSocket communication
+TURN Server - NAT traversal for reliable connections
+
+Infrastructure
+
+AWS EC2 - Cloud hosting
+HTTPS/WSS - Secure connections required for WebRTC
+
+
+
+Prerequisites
+
+Node.js 14+
+Modern web browser with WebRTC support
+HTTPS domain (required for camera access)
+
+Installation
+
+Clone the repository
+
+bashgit clone https://github.com/yourusername/facecall-webrtc.git
+cd facecall-webrtc
+
+Install dependencies
+
+bash npm install
 
 WebRTC is chosen for peer-to-peer video/audio, low latency, and cross-browser support.
 
